@@ -1,0 +1,165 @@
+---
+title: "DataLoad"
+output: html_document
+---
+root location
+```{r}
+loc='~/Desktop/SMD/Data/Spectra/Reorganized'
+```
+
+Data loading
+```{r}
+classloc=array(dim=8)
+data_all=data.frame()
+for (i in 1:8){
+  classloc[i]=paste(loc,'/Class',i,sep='') # path of each class
+  files=list.files(classloc[i]) # files in each class
+  data=list()
+  for (j in 1:length(files)){
+    temp=read.table(paste(classloc[i],'/',files[j],sep=''),skip=17,nrows=2048)
+    data[[j]]=temp[,2]
+  }
+  data=data.frame(t(data.frame(data)),row.names=NULL)# transpose data frame, remove row names
+  tick=temp[,1] # wavelengths
+  write.table(data,paste(loc,'/Class',i,'.csv',sep=''),sep=',',col.names=FALSE,row.names=FALSE)
+  
+  # rename to each class
+  assign(paste('Class',i,sep=''),data)
+  
+  # plot data
+  jpeg(paste(loc,'/class',i,'.jpg',sep=''))
+  boxplot(as.matrix(data),xlab='wavelength',ylab='intensity',xaxt='n') # use.cols=FALSE-> use transpose for box plot
+  axis(1,at=seq(1,length(tick),200),labels=tick[seq(1,length(tick),200)])
+  title(paste('Box plot of Class',i))
+  dev.off()
+  
+  # scale data before adding Class info
+  # data=data.frame(scale(data))
+  
+  # merge all data
+  data$Class=i # set class as integer rather than ordered factor first
+  data_all=rbind(data_all,data) # merge all data together, 120 rows, 2049 columns, contains class info
+}
+
+# make subset with only data$OrderedClass as Class info
+ordered=as.factor(data_all$Class)
+data_ordered=data.frame(subset(data_all,select=-Class),ordered)
+```
+
+ANOVA
+```{r}
+
+```
+
+Classification, random forest
+```{r}
+require(randomForest)
+fit=randomForest(ordered~.,data=data_ordered) # random forest with all features
+print(fit)
+imp=importance(fit)
+id=order(imp,decreasing=TRUE)[1:100] # print most important 100 ids
+tick[id] # print corresponding wavelength
+
+# redo classfication on using 100 chosen wavelength
+data_subset=data_ordered[,c(id,2049)] # subset includes class info, dim= 120*101
+fit2=randomForest(ordered~.,data=data_subset)
+print(fit2) # same error rate as using all features
+
+# choose wavelengths that are far apart, 10nm distance at least
+id_far=id[1] # first one chosen already
+for (i in seq(2,100)){
+  if (all(abs(tick[id[i]]-tick[id_far])>10)){
+    id_far=c(id_far,id[i])
+    }
+}
+data_subset2=data_ordered[,c(id_far,2049)] # subset includes class info, dim= 120*12, seems chosen id are slightly different some times
+fit3=randomForest(ordered~.,data=data_subset2)
+print(fit3) # smaller error 
+
+# merge classes: 3,5,7,8->3 | 4,6->4
+data_all$Class_merge=replace(data_all$Class,data_all$Class %in% c(5,7,8), 3)
+data_all$Class_merge=replace(data_all$Class_merge,data_all$Class_merge==6, 4)
+data_all$Class_merge=as.factor(data_all$Class_merge) # change to ordered for classification
+unique(data_all$Class)
+unique(data_all$Class_merge)
+# create new data set with Class_merge
+data_merge=subset(data_all,select=-Class)
+
+# using selected id_far on new merged classes
+data_subset3=data_merge[,c(id_far,2049)] # subset includes merged class, dim=120*12 
+fit4=randomForest(Class_merge~.,data=data_subset3,mtry=2,importance=TRUE)
+print(fit4)
+```
+
+Feature selection
+```{r}
+require(MRMR)
+require(mRMRe)
+require(Rcpp)
+set.thread.count(2)
+data_ordered$ordered=as.ordered(data_ordered$ordered)
+dd=mRMR.data(data_ordered) # $Class needs to be as.ordered() 
+sol=mRMR.ensemble(data=dd,feature_count=100,target_indices=2049,solution_count=1)
+sel=unlist(sol@filters) # selected wavelength id
+tick[unlist(sel)] # selected wavelength nm
+
+# choose 100 wavelgnths that are far apart
+id_mrmr=sel[1] # first one chosen already
+for (i in seq(2,100)){
+  if (all(abs(tick[sel[i]]-tick[id_mrmr])>10)){
+    id_mrmr=c(id_mrmr,sel[i])
+    }
+}
+
+# random forest on id_mrmr
+data_subset5=data_ordered[,c(id_mrmr,2049)] # subset includes merged class, dim=120*12 
+fit5=randomForest(ordered~.,data=data_subset5)
+print(fit5)
+
+# random forest id_mrmr and merged class
+data_subset6=data_merge[,c(id_mrmr,2049)]
+fit6=randomForest(Class_merge~.,data=data_subset6)
+print(fit6)
+```
+
+Load wavelength info from this animal study, the current used MSI wavelengths are: 420 525 590 620 660 720 830 850
+```{r}
+# find wavelengths in the tick
+tick_ori=c(420, 525, 590, 620, 660, 720, 830, 850)
+id_MSI=list()
+for (i in 1:8){
+  id_MSI[i]=which.min(abs(tick-tick_ori[i]))
+}
+id_MSI=unlist(id_MSI)
+tick[id_MSI] # print out apporximated wavelength value in 
+```
+
+Add MSI ids to choosen random forest ids id_far and id_mrmr
+```{r}
+data_subset7=data_merge[,c(id_far,id_MSI,2049)] # id_far and MSI combine
+fit7=randomForest(Class_merge~.,data=data_subset7)
+print(fit7)
+
+data_subset8=data_merge[,c(id_mrmr,id_MSI,2049)] # id_mrmr and MSI combine
+fit8=randomForest(Class_merge~.,data=data_subset8)
+print(fit8)
+
+data_subset9=data_merge[,c(id_MSI,2049)] # just using MSI
+fit9=randomForest(Class_merge~.,data=data_subset9)
+print(fit9)
+```
+
+
+
+load and plot room light
+```{r}
+room=read.table(paste(loc,'/Room light.txt',sep=''),skip=17,nrows=2048)
+jpeg(paste(loc,'/roomlight.jpg',sep=''))
+plot(room[,2],type='l',xlab='wavelength',ylab='intensity',xaxt='n',yaxt='n')
+axis(1,at=seq(1,length(tick),200),labels=tick[seq(1,length(tick),200)],las=2)
+axis(2,las=1)
+op=par(mar=c(5,5,2,2)+0.1)
+par(op)
+dev.off()
+```
+
